@@ -4,7 +4,11 @@ import { SHOCK_LIST } from '../data/shocks';
 import { DEFAULT_PORTFOLIO } from '../data/portfolio';
 import { runEngine } from '../engine';
 
-export function PresetBar() {
+interface PresetBarProps {
+    onComputed?: (output: EngineOutput) => void;
+}
+
+export function PresetBar({ onComputed }: PresetBarProps) {
     const [activeId, setActiveId] = useState<string | null>(null);
     const [output, setOutput] = useState<EngineOutput | null>(null);
     const [error, setError] = useState<string | null>(null);
@@ -24,12 +28,14 @@ export function PresetBar() {
                 jumpMean: result.jumpMean,
                 jumpVol: result.jumpVol,
             });
+            // Notify parent to dispatch GPU compute
+            onComputed?.(result);
         } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
             setError(msg);
             console.error(`[MSSIM] Engine error:`, e);
         }
-    }, []);
+    }, [onComputed]);
 
     return (
         <div className="preset-bar">

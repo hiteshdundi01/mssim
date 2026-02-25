@@ -7,7 +7,7 @@ A real-time, browser-based financial physics engine that translates qualitative 
 | Step | Description | Status |
 |------|-------------|--------|
 | 1 | Scaffold, Rust/WASM Math Engine & Presets | ✅ Complete |
-| 2 | WebGPU Init & Compute Shader | ⬜ Pending |
+| 2 | WebGPU Init & Compute Shader | ✅ Complete |
 | 3 | Render Shader & Visual Pipeline | ⬜ Pending |
 | 4 | UI, Presets & Reactivity | ⬜ Pending |
 
@@ -166,5 +166,82 @@ The Cholesky matrix L, adjusted drift, and adjusted vol are ready as `Float32Arr
    - Box-Muller transform (N(0,1) generation)
    - Cholesky correlation (X = L·Z)
    - Merton jump-diffusion path generation
-4. Dispatch 1M compute threads, each generating a full portfolio return path
+4. Dispatch 100K compute threads, each generating a full portfolio return path
 5. Output (X, Y) position buffer for the render shader
+
+---
+
+## Step 2: What Was Built
+
+### WebGPU Initialization
+- Feature detection via `navigator.gpu` with graceful fallback
+- High-performance adapter request (prefers discrete GPU)
+- Device loss and uncaptured error handlers
+- React integration: init on mount, status display in UI center
+
+### GPU Buffer Layout
+
+| Buffer | Type | Size | Content |
+|--------|------|------|---------|
+| `params` | Uniform | 32B | `SimParams` struct: numAssets, numParticles, dt, jumpLambda, jumpMean, jumpVol, seed |
+| `drift` | Storage (read) | 64B | Adjusted drift vector from WASM (max 16 assets) |
+| `vol` | Storage (read) | 64B | Adjusted volatility vector from WASM |
+| `cholesky` | Storage (read) | 1024B | Cholesky L matrix from WASM (max 16×16) |
+| `weights` | Storage (read) | 64B | Portfolio weights |
+| `positions` | Storage (r/w) | 800KB | Output: `vec2<f32>` per particle (100K particles) |
+| `readback` | Map Read | 800KB | Staging buffer for CPU readback (verification only) |
+
+### WGSL Compute Shader (`simulate.wgsl`)
+
+Single-dispatch kernel at `@workgroup_size(256)`:
+
+1. **PCG32 PRNG** — PCG-XSH-RR variant, seeded per-particle via `global_id ^ seed`
+2. **Box-Muller** — Generates N standard normals from pairs of uniforms
+3. **Cholesky correlation** — `X = L·Z` matrix-vector multiply (N ≤ 16, unrolled)
+4. **Merton per-asset** — `R_i = (μ_i - σ_i²/2)·dt + σ_i·√dt·X_i + J_i`
+5. **Portfolio return** — `R_p = Σ(w_i · R_i)`
+6. **Position mapping** — `(x, y) = (idx/N + jitter, R_p)`
+
+### JS Orchestration (`compute.ts`)
+
+- Pipeline creation with explicit bind group layout
+- Buffer upload from WASM `Float32Array` outputs
+- Compute pass encoding and submission
+- Readback via staging buffer (temporary, for verification)
+
+### Project Structure (Updated)
+
+```
+mssim/
+├── crates/engine/              # Rust WASM crate
+│   ├── Cargo.toml
+│   └── src/
+│       ├── lib.rs
+│       ├── math.rs
+│       └── engine.rs
+├── src/
+│   ├── wasm/engine/            # wasm-pack output (gitignored)
+│   ├── shaders/
+│   │   └── simulate.wgsl       # Compute shader (Step 2)
+│   ├── data/
+│   │   ├── portfolio.ts
+│   │   └── shocks.ts
+│   ├── components/
+│   │   └── PresetBar.tsx
+│   ├── types.ts
+│   ├── engine.ts               # WASM wrapper
+│   ├── gpu.ts                  # WebGPU init (Step 2)
+│   ├── compute.ts              # GPU orchestration (Step 2)
+│   ├── App.tsx
+│   ├── main.tsx
+│   └── index.css
+├── build-wasm.ps1
+├── vite.config.ts
+├── package.json
+└── index.html
+```
+
+### Verification
+
+- **Browser:** WebGPU initializes, compute dispatches 100K particles, readback shows valid (x, y) positions with no NaN/Infinity values
+- **Console output:** `[MSSIM] Compute dispatched: 100,000 particles in Xms`
