@@ -23,6 +23,7 @@ export interface ComputeResources {
     choleskyBuffer: GPUBuffer;
     weightsBuffer: GPUBuffer;
     positionBuffer: GPUBuffer;
+    readbackBuffer: GPUBuffer;
     bindGroupLayout: GPUBindGroupLayout;
     bindGroup: GPUBindGroup;
     numParticles: number;
@@ -126,6 +127,13 @@ export async function createComputePipeline(
         GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
     );
 
+    // Readback buffer for CPU-side statistics computation
+    const readbackBuffer = device.createBuffer({
+        label: 'readback',
+        size: posSize,
+        usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+    });
+
     // ── Bind group ──────────────────────────────────────────────
     const bindGroup = device.createBindGroup({
         label: 'simulate-bg',
@@ -145,7 +153,7 @@ export async function createComputePipeline(
     return {
         device, pipeline,
         paramBuffer, driftBuffer, volBuffer, choleskyBuffer, weightsBuffer,
-        positionBuffer,
+        positionBuffer, readbackBuffer,
         bindGroupLayout, bindGroup,
         numParticles,
     };
@@ -189,4 +197,23 @@ export function dispatchSimulation(
     pass.end();
 
     device.queue.submit([encoder.finish()]);
+}
+
+// ── Readback (for statistics computation) ────────────────────────
+
+export async function readbackPositions(
+    resources: ComputeResources,
+): Promise<Float32Array> {
+    const { device, positionBuffer, readbackBuffer, numParticles } = resources;
+    const byteSize = numParticles * 2 * 4;
+
+    const encoder = device.createCommandEncoder({ label: 'readback-cmd' });
+    encoder.copyBufferToBuffer(positionBuffer, 0, readbackBuffer, 0, byteSize);
+    device.queue.submit([encoder.finish()]);
+
+    await readbackBuffer.mapAsync(GPUMapMode.READ);
+    const data = new Float32Array(readbackBuffer.getMappedRange().slice(0));
+    readbackBuffer.unmap();
+
+    return data;
 }

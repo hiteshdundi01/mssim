@@ -11,6 +11,7 @@
   --color-accent-glow: rgba(0, 229, 255, 0.25);
   --color-danger: #ff4d2e;
   --color-danger-glow: rgba(255, 77, 46, 0.25);
+  --color-warning: #ff9f43;
   --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, monospace;
 }
@@ -21,7 +22,9 @@
   box-sizing: border-box;
 }
 
-html, body, #root {
+html,
+body,
+#root {
   width: 100%;
   height: 100%;
   overflow: hidden;
@@ -51,11 +54,10 @@ html, body, #root {
   pointer-events: none;
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
-  padding: 1.5rem;
+  padding: 1.25rem 1.5rem;
 }
 
-.ui-overlay > * {
+.ui-overlay>* {
   pointer-events: auto;
 }
 
@@ -78,12 +80,123 @@ html, body, #root {
   color: var(--color-accent);
 }
 
+.header-subtitle {
+  font-size: 0.8125rem;
+  font-weight: 400;
+  letter-spacing: 0.03em;
+  text-transform: none;
+  color: var(--color-text-muted);
+  margin-left: 0.75rem;
+}
+
+/* ── Performance HUD ─────────────────────────────────────────── */
+.perf-hud {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  color: var(--color-text-muted);
+  letter-spacing: 0.02em;
+  opacity: 0.7;
+  animation: fadeIn 0.5s ease;
+}
+
+.perf-sep {
+  color: var(--color-border);
+  margin: 0 0.125rem;
+}
+
+.perf-gpu {
+  color: var(--color-accent);
+  opacity: 0.5;
+}
+
+/* ── Statistics Panel ────────────────────────────────────────── */
+.stats-panel {
+  align-self: flex-end;
+  margin-top: 1rem;
+  padding: 1rem 1.25rem;
+  background: rgba(13, 17, 23, 0.75);
+  backdrop-filter: blur(16px);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  min-width: 260px;
+  animation: fadeSlideIn 0.4s ease;
+}
+
+.stats-title {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 0.375rem 1rem;
+  align-items: baseline;
+}
+
+.stat-label {
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  color: var(--color-text-muted);
+  letter-spacing: 0.02em;
+  cursor: help;
+}
+
+.stat-info {
+  font-size: 0.5625rem;
+  opacity: 0.4;
+  margin-left: 0.125rem;
+  transition: opacity 0.2s;
+}
+
+.stat-label:hover .stat-info {
+  opacity: 0.9;
+}
+
+.stat-value {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--color-text);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-danger {
+  color: var(--color-warning);
+}
+
 /* ── Preset bar ──────────────────────────────────────────────── */
+.preset-bar-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  padding-bottom: 0.75rem;
+}
+
+.preset-label {
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  font-weight: 500;
+}
+
 .preset-bar {
   display: flex;
   justify-content: center;
   gap: 0.75rem;
-  padding-bottom: 1rem;
 }
 
 .preset-btn {
@@ -127,6 +240,17 @@ html, body, #root {
   mask-composite: exclude;
 }
 
+/* ── Shock description ───────────────────────────────────────── */
+.shock-desc {
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  text-align: center;
+  max-width: 480px;
+  line-height: 1.5;
+  animation: fadeIn 0.3s ease;
+}
+
 /* ── Status / placeholder ────────────────────────────────────── */
 .status-center {
   position: absolute;
@@ -148,9 +272,33 @@ html, body, #root {
 }
 
 .status-value {
-  font-family: var(--font-mono);
-  font-size: 0.875rem;
+  font-family: var(--font-sans);
+  font-size: 0.9375rem;
   color: var(--color-accent);
+  max-width: 520px;
+  text-align: center;
+  line-height: 1.6;
+}
+
+/* ── Explainer blurb ─────────────────────────────────────────── */
+.explainer {
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  margin-top: 0.5rem;
+  animation: fadeIn 0.5s ease;
+}
+
+.explainer-cyan {
+  color: rgb(0, 217, 255);
+  font-weight: 600;
+  margin: 0 0.125rem;
+}
+
+.explainer-red {
+  color: rgb(255, 80, 40);
+  font-weight: 600;
+  margin: 0 0.125rem;
 }
 
 /* ── Subtle grid background ──────────────────────────────────── */
@@ -162,4 +310,27 @@ html, body, #root {
     linear-gradient(rgba(0, 229, 255, 0.03) 1px, transparent 1px),
     linear-gradient(90deg, rgba(0, 229, 255, 0.03) 1px, transparent 1px);
   background-size: 60px 60px;
+}
+
+/* ── Animations ──────────────────────────────────────────────── */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes fadeSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
