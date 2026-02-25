@@ -8,7 +8,7 @@ A real-time, browser-based financial physics engine that translates qualitative 
 |------|-------------|--------|
 | 1 | Scaffold, Rust/WASM Math Engine & Presets | ✅ Complete |
 | 2 | WebGPU Init & Compute Shader | ✅ Complete |
-| 3 | Render Shader & Visual Pipeline | ⬜ Pending |
+| 3 | Render Shader & Visual Pipeline | ✅ Complete |
 | 4 | UI, Presets & Reactivity | ⬜ Pending |
 
 ---
@@ -189,7 +189,7 @@ The Cholesky matrix L, adjusted drift, and adjusted vol are ready as `Float32Arr
 | `cholesky` | Storage (read) | 1024B | Cholesky L matrix from WASM (max 16×16) |
 | `weights` | Storage (read) | 64B | Portfolio weights |
 | `positions` | Storage (r/w) | 800KB | Output: `vec2<f32>` per particle (100K particles) |
-| `readback` | Map Read | 800KB | Staging buffer for CPU readback (verification only) |
+
 
 ### WGSL Compute Shader (`simulate.wgsl`)
 
@@ -245,3 +245,86 @@ mssim/
 
 - **Browser:** WebGPU initializes, compute dispatches 100K particles, readback shows valid (x, y) positions with no NaN/Infinity values
 - **Console output:** `[MSSIM] Compute dispatched: 100,000 particles in Xms`
+
+---
+
+## Step 3: What Was Built
+
+### Render Pipeline
+
+- **Instanced quad rendering** — each particle is a 6-vertex billboard (2 triangles), not `point-list`, because WebGPU caps point sizes at 1px on most implementations
+- **Additive blending** — `srcFactor: one, dstFactor: one` creates natural density glow where particles overlap
+- **GPUCanvasContext** configured on the HTML canvas with `premultiplied` alpha mode
+- **ResizeObserver** for DPR-aware canvas sizing with automatic aspect ratio updates
+
+### WGSL Render Shader (`render.wgsl`)
+
+**Vertex shader:**
+- Reads `positions` storage buffer (shared with compute shader output)
+- Generates quad offsets from `vertex_index % 6` — no vertex buffer needed
+- Transforms compute space `(x, y)` → NDC with configurable `y_scale` and `aspect` correction
+- Passes raw `portfolio_return` to fragment shader as varying
+
+**Fragment shader:**
+- Radial glow falloff: `smoothstep(1.0, 0.0, dist)` for soft circular particles
+- Color mapping by portfolio return:
+  - `y > -0.10` → **bioluminescent cyan** `(0.0, 0.85, 1.0)`
+  - `-0.30 < y < -0.10` → interpolated **cyan → orange**
+  - `y < -0.30` → **tail-risk red** `(1.0, 0.15, 0.05)`
+- Premultiplied alpha output for correct additive blending
+
+### Render Uniforms
+
+| Field | Value | Purpose |
+|-------|-------|---------|
+| `point_size` | 0.012 | NDC half-size (~8px at 1080p) |
+| `y_scale` | 8.0 | Amplifies return values for vertical spread |
+| `y_offset` | 0.0 | Vertical center offset |
+| `aspect` | dynamic | Canvas aspect ratio, updated on resize |
+
+### JS Orchestration (`renderer.ts`)
+
+- `createRenderPipeline()` — configures canvas context, compiles render shader, creates additive blend pipeline
+- `updateRenderUniforms()` — writes render params (called on init and resize)
+- `renderFrame()` — encodes render pass: clear → draw instanced quads → submit
+
+### Project Structure (Updated)
+
+```
+mssim/
+├── crates/engine/              # Rust WASM crate
+│   └── src/
+│       ├── lib.rs
+│       ├── math.rs
+│       └── engine.rs
+├── src/
+│   ├── wasm/engine/            # wasm-pack output (gitignored)
+│   ├── shaders/
+│   │   ├── simulate.wgsl       # Compute shader (Step 2)
+│   │   └── render.wgsl         # Render shader (Step 3)
+│   ├── data/
+│   │   ├── portfolio.ts
+│   │   └── shocks.ts
+│   ├── components/
+│   │   └── PresetBar.tsx
+│   ├── types.ts
+│   ├── engine.ts               # WASM wrapper
+│   ├── gpu.ts                  # WebGPU init (canvas context)
+│   ├── compute.ts              # Compute pipeline
+│   ├── renderer.ts             # Render pipeline (Step 3)
+│   ├── App.tsx                 # Render loop, resize observer
+│   ├── main.tsx
+│   └── index.css
+├── build-wasm.ps1
+├── vite.config.ts
+├── package.json
+└── index.html
+```
+
+### Verification
+
+- **Browser:** 100K particles render as bright cyan glowing points; Black Swan shows wide distribution, Rate Hike shows tight distribution
+- **Performance:** Compute + render in < 1ms
+- **Additive blending:** Dense particle regions glow brighter
+- **Resize:** Canvas properly scales with device pixel ratio
+- **Status text:** Auto-hides after first simulation

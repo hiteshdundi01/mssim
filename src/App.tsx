@@ -1,10 +1,12 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
 import { PresetBar } from './components/PresetBar';
 import { initWebGPU } from './gpu';
-import { createComputePipeline, dispatchSimulation, readbackPositions } from './compute';
+import { createComputePipeline, dispatchSimulation } from './compute';
+import { createRenderPipeline, updateRenderUniforms, renderFrame } from './renderer';
 import { DEFAULT_PORTFOLIO } from './data/portfolio';
 import type { EngineOutput } from './types';
 import type { ComputeResources } from './compute';
+import type { RenderResources } from './renderer';
 import './index.css';
 
 const NUM_PARTICLES = 100_000;
@@ -14,15 +16,24 @@ type GpuStatus = 'initializing' | 'ready' | 'error' | 'unsupported';
 export default function App() {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const computeRef = useRef<ComputeResources | null>(null);
+    const renderRef = useRef<RenderResources | null>(null);
+    const [hasSimulated, setHasSimulated] = useState(false);
     const [gpuStatus, setGpuStatus] = useState<GpuStatus>('initializing');
-    const [computing, setComputing] = useState(false);
 
-    // ── Initialize WebGPU + compute pipeline on mount ───────────
+    // ── Initialize WebGPU + compute + render pipelines on mount ──
     useEffect(() => {
         let cancelled = false;
 
         async function init() {
-            const ctx = await initWebGPU();
+            const canvas = canvasRef.current;
+            if (!canvas) return;
+
+            // Size canvas to device pixels
+            const dpr = window.devicePixelRatio || 1;
+            canvas.width = canvas.clientWidth * dpr;
+            canvas.height = canvas.clientHeight * dpr;
+
+            const ctx = await initWebGPU(canvas);
             if (cancelled) return;
 
             if (!ctx) {
@@ -31,12 +42,22 @@ export default function App() {
             }
 
             try {
-                const resources = await createComputePipeline(ctx.device, NUM_PARTICLES);
+                // Create compute pipeline
+                const compute = await createComputePipeline(ctx.device, NUM_PARTICLES);
                 if (cancelled) return;
-                computeRef.current = resources;
+                computeRef.current = compute;
+
+                // Create render pipeline — shares position buffer with compute
+                const render = createRenderPipeline(
+                    ctx.device, ctx.context, canvas,
+                    compute.positionBuffer, NUM_PARTICLES,
+                );
+                renderRef.current = render;
+                updateRenderUniforms(render);
+
                 setGpuStatus('ready');
             } catch (e) {
-                console.error('[MSSIM] Compute pipeline creation failed:', e);
+                console.error('[MSSIM] Pipeline creation failed:', e);
                 if (!cancelled) setGpuStatus('error');
             }
         }
@@ -45,55 +66,55 @@ export default function App() {
         return () => { cancelled = true; };
     }, []);
 
-    // ── Handle shock computation → GPU dispatch ─────────────────
-    const handleComputed = useCallback(async (output: EngineOutput) => {
-        const resources = computeRef.current;
-        if (!resources) {
-            console.warn('[MSSIM] GPU not ready — skipping compute dispatch');
+    // ── Resize observer for DPR-aware canvas sizing ─────────────
+    useEffect(() => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+
+        const observer = new ResizeObserver(() => {
+            const dpr = window.devicePixelRatio || 1;
+            canvas.width = canvas.clientWidth * dpr;
+            canvas.height = canvas.clientHeight * dpr;
+
+            // Update render uniforms (aspect ratio changed)
+            const render = renderRef.current;
+            if (render) {
+                updateRenderUniforms(render);
+                // Re-render if we have particles
+                renderFrame(render);
+            }
+        });
+
+        observer.observe(canvas);
+        return () => observer.disconnect();
+    }, []);
+
+    // ── Handle shock computation → GPU dispatch → render ────────
+    const handleComputed = useCallback((output: EngineOutput) => {
+        const compute = computeRef.current;
+        const render = renderRef.current;
+        if (!compute || !render) {
+            console.warn('[MSSIM] GPU not ready — skipping dispatch');
             return;
         }
 
-        setComputing(true);
         const t0 = performance.now();
 
-        try {
-            // Upload WASM outputs to GPU and dispatch compute
-            dispatchSimulation(resources, output, DEFAULT_PORTFOLIO.weights);
+        // Dispatch compute shader
+        dispatchSimulation(compute, output, DEFAULT_PORTFOLIO.weights);
 
-            // Readback for verification (temporary — removed in Step 3)
-            const positions = await readbackPositions(resources);
-            const elapsed = (performance.now() - t0).toFixed(1);
+        // Render the result
+        renderFrame(render);
 
-            console.log(`[MSSIM] Compute dispatched: ${NUM_PARTICLES.toLocaleString()} particles in ${elapsed}ms`);
+        setHasSimulated(true);
 
-            // Log a sample of positions
-            const sampleSize = Math.min(10, NUM_PARTICLES);
-            const sample: { x: number; y: number }[] = [];
-            for (let i = 0; i < sampleSize; i++) {
-                sample.push({ x: positions[i * 2], y: positions[i * 2 + 1] });
-            }
-            console.log('[MSSIM] Readback sample (first 10 particles):', sample);
-
-            // Quick sanity check
-            let nanCount = 0;
-            let infCount = 0;
-            for (let i = 0; i < positions.length; i++) {
-                if (isNaN(positions[i])) nanCount++;
-                if (!isFinite(positions[i])) infCount++;
-            }
-            if (nanCount > 0 || infCount > 0) {
-                console.warn(`[MSSIM] ⚠ Data quality: ${nanCount} NaN, ${infCount} Infinity values`);
-            } else {
-                console.log('[MSSIM] ✓ No NaN/Infinity values in output');
-            }
-        } catch (e) {
-            console.error('[MSSIM] GPU compute error:', e);
-        } finally {
-            setComputing(false);
-        }
+        const elapsed = (performance.now() - t0).toFixed(1);
+        console.log(`[MSSIM] Compute + render: ${NUM_PARTICLES.toLocaleString()} particles in ${elapsed}ms`);
     }, []);
 
-    // ── Status text ─────────────────────────────────────────────
+    // ── Status (only shown before first simulation) ─────────────
+    const showStatus = !hasSimulated;
+
     const statusLabel = {
         initializing: 'WebGPU Pipeline',
         ready: 'WebGPU Pipeline',
@@ -103,9 +124,7 @@ export default function App() {
 
     const statusValue = {
         initializing: 'Initializing…',
-        ready: computing
-            ? `Computing ${NUM_PARTICLES.toLocaleString()} particles…`
-            : `Ready — ${NUM_PARTICLES.toLocaleString()} particles`,
+        ready: `Ready — ${NUM_PARTICLES.toLocaleString()} particles — select a preset`,
         error: 'Pipeline creation failed — check console',
         unsupported: 'This browser does not support WebGPU',
     }[gpuStatus];
@@ -115,16 +134,18 @@ export default function App() {
             {/* Subtle grid background */}
             <div className="grid-bg" />
 
-            {/* WebGPU canvas — rendering wired in Step 3 */}
+            {/* WebGPU canvas */}
             <div className="canvas-container">
                 <canvas ref={canvasRef} />
             </div>
 
-            {/* Center status */}
-            <div className="status-center">
-                <span className="status-label">{statusLabel}</span>
-                <span className="status-value">{statusValue}</span>
-            </div>
+            {/* Center status — hidden once particles are rendered */}
+            {showStatus && (
+                <div className="status-center">
+                    <span className="status-label">{statusLabel}</span>
+                    <span className="status-value">{statusValue}</span>
+                </div>
+            )}
 
             {/* Overlay UI */}
             <div className="ui-overlay">
