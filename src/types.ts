@@ -29,3 +29,10 @@ export interface EngineOutput {
     jumpMean: number;
     jumpVol: number;
 }
+
+// ── Scenario result for comparison table ─────────────────────────
+export interface ShockResult {
+    shockId: string;
+    shockName: string;
+    stats: import('./stats').SimStats;
+}

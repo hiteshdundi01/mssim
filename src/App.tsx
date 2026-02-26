@@ -1,13 +1,21 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
+import { Onboarding } from './components/Onboarding';
+import { PortfolioBuilder } from './components/PortfolioBuilder';
+import { PortfolioPanel } from './components/PortfolioPanel';
 import { PresetBar } from './components/PresetBar';
 import { StatsPanel } from './components/StatsPanel';
+import { NarrativeSummary } from './components/NarrativeSummary';
+import { ComparisonTable } from './components/ComparisonTable';
+import { ExportBar } from './components/ExportBar';
+import { CanvasOverlay } from './components/CanvasOverlay';
 import { PerfHUD } from './components/PerfHUD';
 import { initWebGPU } from './gpu';
 import { createComputePipeline, dispatchSimulation, readbackPositions } from './compute';
 import { createRenderPipeline, updateRenderUniforms, renderFrame } from './renderer';
 import { computeStats } from './stats';
 import { DEFAULT_PORTFOLIO } from './data/portfolio';
-import type { EngineOutput } from './types';
+import { PORTFOLIO_PRESETS, buildPortfolioFromAllocations } from './data/assetClasses';
+import type { Portfolio, EngineOutput, ShockResult } from './types';
 import type { ComputeResources } from './compute';
 import type { RenderResources } from './renderer';
 import type { SimStats } from './stats';
@@ -16,19 +24,36 @@ import './index.css';
 const NUM_PARTICLES = 100_000;
 
 type GpuStatus = 'initializing' | 'ready' | 'error' | 'unsupported';
+type AppPhase = 'onboarding' | 'building' | 'ready' | 'simulated';
 
 export default function App() {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const computeRef = useRef<ComputeResources | null>(null);
     const renderRef = useRef<RenderResources | null>(null);
-    const [hasSimulated, setHasSimulated] = useState(false);
+
+    // App phase
+    const [phase, setPhase] = useState<AppPhase>('onboarding');
     const [gpuStatus, setGpuStatus] = useState<GpuStatus>('initializing');
+
+    // Portfolio
+    const [portfolio, setPortfolio] = useState<Portfolio>(DEFAULT_PORTFOLIO);
+    const [allocations, setAllocations] = useState<Record<string, number>>(
+        { equities: 0.60, bonds: 0.30, commodities: 0.10, real_estate: 0, cash: 0 }
+    );
+    const [showBuilder, setShowBuilder] = useState(false);
+
+    // Simulation
     const [stats, setStats] = useState<SimStats | null>(null);
+    const [activeShockName, setActiveShockName] = useState<string | null>(null);
+    const [activeShockId, setActiveShockId] = useState<string | null>(null);
     const [computeMs, setComputeMs] = useState<number | null>(null);
     const [renderMs, setRenderMs] = useState<number | null>(null);
     const [gpuName, setGpuName] = useState<string | null>(null);
 
-    // ── Initialize WebGPU + compute + render pipelines on mount ──
+    // Scenario comparison
+    const [scenarioResults, setScenarioResults] = useState<ShockResult[]>([]);
+
+    // ── Initialize WebGPU ──────────────────────────────────────
     useEffect(() => {
         let cancelled = false;
 
@@ -36,7 +61,6 @@ export default function App() {
             const canvas = canvasRef.current;
             if (!canvas) return;
 
-            // Size canvas to device pixels
             const dpr = window.devicePixelRatio || 1;
             canvas.width = canvas.clientWidth * dpr;
             canvas.height = canvas.clientHeight * dpr;
@@ -50,18 +74,15 @@ export default function App() {
             }
 
             try {
-                // Get GPU adapter info (synchronous in modern Chrome)
                 const info = ctx.adapter.info;
                 if (!cancelled && info) {
                     setGpuName(info.description || info.vendor || 'WebGPU');
                 }
 
-                // Create compute pipeline
                 const compute = await createComputePipeline(ctx.device, NUM_PARTICLES);
                 if (cancelled) return;
                 computeRef.current = compute;
 
-                // Create render pipeline — shares position buffer with compute
                 const render = createRenderPipeline(
                     ctx.device, ctx.context, canvas,
                     compute.positionBuffer, NUM_PARTICLES,
@@ -80,7 +101,7 @@ export default function App() {
         return () => { cancelled = true; };
     }, []);
 
-    // ── Resize observer for DPR-aware canvas sizing ─────────────
+    // ── Resize observer ────────────────────────────────────────
     useEffect(() => {
         const canvas = canvasRef.current;
         if (!canvas) return;
@@ -101,8 +122,8 @@ export default function App() {
         return () => observer.disconnect();
     }, []);
 
-    // ── Handle shock computation → GPU dispatch → render → stats ─
-    const handleComputed = useCallback(async (output: EngineOutput) => {
+    // ── Handle engine computation → GPU → stats ────────────────
+    const handleComputed = useCallback(async (output: EngineOutput, shockName?: string, shockId?: string) => {
         const compute = computeRef.current;
         const render = renderRef.current;
         if (!compute || !render) {
@@ -110,39 +131,61 @@ export default function App() {
             return;
         }
 
-        // Compute dispatch
         const t0 = performance.now();
-        dispatchSimulation(compute, output, DEFAULT_PORTFOLIO.weights);
+        dispatchSimulation(compute, output, portfolio.weights);
         const t1 = performance.now();
 
-        // Render
         renderFrame(render);
         const t2 = performance.now();
 
-        setHasSimulated(true);
+        setPhase('simulated');
         setComputeMs(t1 - t0);
         setRenderMs(t2 - t1);
+        if (shockName) setActiveShockName(shockName);
+        if (shockId) setActiveShockId(shockId);
 
-        console.log(`[MSSIM] Compute: ${(t1 - t0).toFixed(1)}ms | Render: ${(t2 - t1).toFixed(1)}ms`);
-
-        // Async readback for stats (doesn't block rendering)
         try {
             const positions = await readbackPositions(compute);
             const s = computeStats(positions, NUM_PARTICLES);
             setStats(s);
-            console.log('[MSSIM] Stats:', {
-                mean: (s.mean * 100).toFixed(2) + '%',
-                stdDev: (s.stdDev * 100).toFixed(2) + '%',
-                var95: (s.var95 * 100).toFixed(2) + '%',
-                tailPct: s.tailPct.toFixed(1) + '%',
-            });
+
+            // Add to comparison
+            if (shockId && shockName) {
+                setScenarioResults(prev => {
+                    const filtered = prev.filter(r => r.shockId !== shockId);
+                    return [...filtered, { shockId, shockName, stats: s }];
+                });
+            }
         } catch (e) {
             console.warn('[MSSIM] Stats readback failed:', e);
         }
+    }, [portfolio.weights]);
+
+    // ── Portfolio actions ───────────────────────────────────────
+    const handleUseSample = useCallback(() => {
+        setPortfolio(DEFAULT_PORTFOLIO);
+        setAllocations({ equities: 0.60, bonds: 0.30, commodities: 0.10, real_estate: 0, cash: 0 });
+        setPhase('ready');
     }, []);
 
-    // ── Status (only shown before first simulation) ─────────────
-    const showStatus = !hasSimulated;
+    const handleBuildPortfolio = useCallback(() => {
+        setPhase('building');
+        setShowBuilder(true);
+    }, []);
+
+    const handleApplyPortfolio = useCallback((p: Portfolio, alloc: Record<string, number>) => {
+        setPortfolio(p);
+        setAllocations(alloc);
+        setShowBuilder(false);
+        setPhase('ready');
+        setScenarioResults([]);
+        setStats(null);
+        setActiveShockName(null);
+        setActiveShockId(null);
+    }, []);
+
+    // ── Status messages ────────────────────────────────────────
+    const showStatus = phase === 'ready';
 
     const statusLabel = {
         initializing: 'Getting Ready',
@@ -158,6 +201,7 @@ export default function App() {
         unsupported: 'This browser doesn\'t support GPU-accelerated graphics. Try Chrome or Edge.',
     }[gpuStatus];
 
+    // ── Render ──────────────────────────────────────────────────
     return (
         <>
             {/* Subtle grid background */}
@@ -165,51 +209,105 @@ export default function App() {
 
             {/* WebGPU canvas */}
             <div className="canvas-container">
-                <canvas ref={canvasRef} />
+                <canvas ref={canvasRef} role="img" aria-label="Monte Carlo simulation visualization showing portfolio return distribution as glowing particles" />
+                {phase === 'simulated' && <CanvasOverlay />}
             </div>
 
-            {/* Center status — hidden once particles are rendered */}
-            {showStatus && (
-                <div className="status-center">
-                    <span className="status-label">{statusLabel}</span>
-                    <span className="status-value">{statusValue}</span>
-                </div>
+            {/* Onboarding — shown on first visit */}
+            {phase === 'onboarding' && (
+                <Onboarding
+                    onBuildPortfolio={handleBuildPortfolio}
+                    onUseSample={handleUseSample}
+                />
             )}
 
-            {/* Overlay UI */}
-            <div className="ui-overlay">
-                {/* Header */}
-                <div className="header">
-                    <div className="header-title">
-                        <span>MSSIM</span>
-                        <span className="header-subtitle">What happens to your portfolio under stress?</span>
+            {/* Portfolio builder modal */}
+            {showBuilder && (
+                <PortfolioBuilder
+                    onApply={handleApplyPortfolio}
+                    onClose={() => {
+                        setShowBuilder(false);
+                        if (phase === 'building') setPhase('onboarding');
+                    }}
+                    initialAllocations={allocations}
+                />
+            )}
+
+            {/* Main UI overlay — hidden during onboarding */}
+            {phase !== 'onboarding' && phase !== 'building' && (
+                <div className="ui-overlay">
+                    {/* Header */}
+                    <div className="header">
+                        <div className="header-title">
+                            <span>MSSIM</span>
+                            <span className="header-subtitle">What happens to your portfolio under stress?</span>
+                        </div>
+                        <PerfHUD
+                            particles={NUM_PARTICLES}
+                            computeMs={computeMs}
+                            renderMs={renderMs}
+                            gpuName={gpuName}
+                        />
                     </div>
-                    <PerfHUD
-                        particles={NUM_PARTICLES}
-                        computeMs={computeMs}
-                        renderMs={renderMs}
-                        gpuName={gpuName}
+
+                    {/* Content area — sidebar + main */}
+                    <div className="content-row">
+                        {/* Left sidebar: Portfolio panel */}
+                        <div className="sidebar">
+                            <PortfolioPanel
+                                allocations={allocations}
+                                onEdit={() => setShowBuilder(true)}
+                            />
+                        </div>
+
+                        {/* Right side: stats + narrative */}
+                        <div className="main-content">
+                            {/* Explainer */}
+                            {phase === 'simulated' && (
+                                <div className="explainer">
+                                    Each dot is one possible future for your portfolio.{' '}
+                                    <span className="explainer-cyan">Cyan dots</span> are normal outcomes.{' '}
+                                    <span className="explainer-red">Red dots</span> are severe losses.
+                                </div>
+                            )}
+
+                            <StatsPanel stats={stats} />
+                            {stats && activeShockName && (
+                                <NarrativeSummary stats={stats} shockName={activeShockName} />
+                            )}
+                        </div>
+                    </div>
+
+                    {/* Center status */}
+                    {showStatus && (
+                        <div className="status-center-inline">
+                            <span className="status-label">{statusLabel}</span>
+                            <span className="status-value">{statusValue}</span>
+                        </div>
+                    )}
+
+                    {/* Spacer */}
+                    <div style={{ flex: 1 }} />
+
+                    {/* Comparison table */}
+                    <ComparisonTable results={scenarioResults} />
+
+                    {/* Export bar */}
+                    <ExportBar
+                        stats={stats}
+                        shockName={activeShockName}
+                        portfolio={portfolio}
+                        canvasRef={canvasRef}
+                    />
+
+                    {/* Preset buttons at bottom */}
+                    <PresetBar
+                        portfolio={portfolio}
+                        allocations={allocations}
+                        onComputed={handleComputed}
                     />
                 </div>
-
-                {/* Explainer — appears after first simulation */}
-                {hasSimulated && (
-                    <div className="explainer">
-                        Each dot is one possible future for your portfolio.
-                        <span className="explainer-cyan">Cyan dots</span> are normal outcomes.
-                        <span className="explainer-red">Red dots</span> are severe losses.
-                    </div>
-                )}
-
-                {/* Stats panel — top right */}
-                <StatsPanel stats={stats} />
-
-                {/* Spacer */}
-                <div style={{ flex: 1 }} />
-
-                {/* Preset buttons at bottom */}
-                <PresetBar onComputed={handleComputed} />
-            </div>
+            )}
         </>
     );
 }
